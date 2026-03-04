@@ -65,11 +65,10 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 	}
 
 	const attempts: Array<() => Promise<SearchResponse | null>> = [];
-	if (isPerplexityAvailable()) attempts.push(async () => searchWithPerplexity(query, options));
-	if (isBraveAvailable()) attempts.push(async () => searchWithBrave(query, options));
 	if (isSearxngAvailable()) attempts.push(async () => searchWithSearxng(query, options));
+	if (isBraveAvailable()) attempts.push(async () => searchWithBrave(query, options));
 	attempts.push(async () => await searchWithGeminiApi(query, options));
-	attempts.push(async () => await searchWithGeminiWeb(query, options));
+	if (isPerplexityAvailable()) attempts.push(async () => searchWithPerplexity(query, options));
 	if (isDuckDuckGoAvailable()) attempts.push(async () => searchWithDuckDuckGo(query, options));
 
 	let lastError: Error | null = null;

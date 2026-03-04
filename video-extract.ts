@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve, extname, basename, join, dirname } from "node:path";
-import { homedir } from "node:os";
+import { homedir, platform } from "node:os";
 import { activityMonitor } from "./activity.js";
 import { isGeminiWebAvailable, queryWithCookies } from "./gemini-web.js";
 import { queryGeminiApiWithVideo, getApiKey, API_BASE } from "./gemini-api.js";
@@ -188,6 +188,7 @@ async function tryVideoGeminiWeb(
 	signal?: AbortSignal,
 ): Promise<ExtractedContent | null> {
 	try {
+		if (platform() !== "darwin") return null;
 		const cookies = await isGeminiWebAvailable();
 		if (!cookies) return null;
 		if (signal?.aborted) return null;

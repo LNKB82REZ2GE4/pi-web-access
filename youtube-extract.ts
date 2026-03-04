@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { activityMonitor } from "./activity.js";
 import { isGeminiWebAvailable, queryWithCookies } from "./gemini-web.js";
@@ -81,8 +81,8 @@ export async function extractYouTube(
 
 	const activityId = activityMonitor.logStart({ type: "fetch", url: `youtube.com/${videoId ?? "video"}` });
 
-	const result = await tryGeminiWeb(canonicalUrl, effectivePrompt, effectiveModel, signal)
-		?? await tryGeminiApi(canonicalUrl, effectivePrompt, effectiveModel, signal)
+	const result = await tryGeminiApi(canonicalUrl, effectivePrompt, effectiveModel, signal)
+		?? await tryGeminiWeb(canonicalUrl, effectivePrompt, effectiveModel, signal)
 		?? await tryPerplexity(url, effectivePrompt, signal);
 
 	if (result) {
@@ -196,6 +196,7 @@ async function tryGeminiWeb(
 	signal?: AbortSignal,
 ): Promise<ExtractedContent | null> {
 	try {
+		if (platform() !== "darwin") return null;
 		const cookies = await isGeminiWebAvailable();
 		if (!cookies) return null;
 

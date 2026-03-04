@@ -91,10 +91,10 @@ interface ProviderAvailability {
 }
 
 function pickBestProvider(available: ProviderAvailability): string {
-	if (available.perplexity) return "perplexity";
-	if (available.brave) return "brave";
 	if (available.searxng) return "searxng";
+	if (available.brave) return "brave";
 	if (available.gemini) return "gemini";
+	if (available.perplexity) return "perplexity";
 	if (available.duckduckgo) return "duckduckgo";
 	return "duckduckgo";
 }
@@ -594,7 +594,7 @@ export default function (pi: ExtensionAPI) {
 		name: "web_search",
 		label: "Web Search",
 		description:
-			`Search the web using Perplexity, Brave Search, SearXNG, Gemini, or DuckDuckGo. Returns an AI-synthesized answer with source citations. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background. Multi-query searches include a brief review window where the user can press ${curateLabel} to curate results in the browser before they're sent. Set curate to false to skip this. Provider auto-selects: Perplexity, then Brave, then SearXNG, then Gemini, then DuckDuckGo.`,
+			`Search the web using Perplexity, Brave Search, SearXNG, Gemini, or DuckDuckGo. Returns an AI-synthesized answer with source citations. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background. Multi-query searches include a brief review window where the user can press ${curateLabel} to curate results in the browser before they're sent. Set curate to false to skip this. Provider auto-selects: SearXNG, then Brave, then Gemini API, then Perplexity, then DuckDuckGo.`,
 		parameters: Type.Object({
 			query: Type.Optional(Type.String({ description: "Single search query. For research tasks, prefer 'queries' with multiple varied angles instead." })),
 			queries: Type.Optional(Type.Array(Type.String(), { description: "Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['React vs Vue performance benchmarks 2026', 'React vs Vue developer experience comparison', 'React ecosystem size vs Vue ecosystem']. Bad: ['React vs Vue', 'React vs Vue comparison', 'React vs Vue review'] (too similar, redundant results)." })),

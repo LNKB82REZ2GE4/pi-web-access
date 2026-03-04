@@ -18,7 +18,7 @@ https://github.com/user-attachments/assets/cac6a17a-1eeb-4dde-9818-cdf85d8ea98f
 
 **Video Understanding** — Point it at a YouTube video or local screen recording and ask questions about what's on screen. Full transcripts, visual descriptions, and frame extraction at exact timestamps.
 
-**Smart Fallbacks** — Every capability has a fallback chain. Search tries Perplexity, then Brave Search, then SearXNG, then Gemini API, then Gemini Web, then DuckDuckGo. YouTube tries Gemini Web, then API, then Perplexity. Blocked pages retry through Jina Reader and Gemini extraction. Something always works.
+**Smart Fallbacks** — Every capability has a fallback chain. Search tries SearXNG, then Brave Search, then Gemini API, then Perplexity, then DuckDuckGo. YouTube tries Gemini API, then Gemini Web (macOS), then Perplexity. Blocked pages retry through Jina Reader and Gemini extraction. Something always works.
 
 **GitHub Cloning** — GitHub URLs are cloned locally instead of scraped. The agent gets real file contents and a local path to explore, not rendered HTML.
 
@@ -42,7 +42,7 @@ If you're not signed into Chrome, or prefer a different provider, add API keys t
 }
 ```
 
-You can configure any combination. In `auto` mode (default), `web_search` tries Perplexity first, then Brave Search, then SearXNG, then Gemini API, then Gemini Web, then DuckDuckGo.
+You can configure any combination. In `auto` mode (default), `web_search` tries SearXNG first, then Brave Search, then Gemini API, then Perplexity, then DuckDuckGo.
 
 Optional dependencies for video frame extraction:
 
