@@ -25,6 +25,9 @@ import { platform, homedir } from "node:os";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { isPerplexityAvailable } from "./perplexity.js";
+import { isBraveAvailable } from "./brave-search.js";
+import { isSearxngAvailable } from "./searxng-search.js";
+import { isDuckDuckGoAvailable } from "./duckduckgo-search.js";
 import { isGeminiApiAvailable } from "./gemini-api.js";
 import { isGeminiWebAvailable } from "./gemini-web.js";
 import {
@@ -79,22 +82,36 @@ function formatShortcut(key: string): string {
 	return key.split("+").map(p => p[0].toUpperCase() + p.slice(1)).join("+");
 }
 
+interface ProviderAvailability {
+	perplexity: boolean;
+	brave: boolean;
+	searxng: boolean;
+	gemini: boolean;
+	duckduckgo: boolean;
+}
+
+function pickBestProvider(available: ProviderAvailability): string {
+	if (available.perplexity) return "perplexity";
+	if (available.brave) return "brave";
+	if (available.searxng) return "searxng";
+	if (available.gemini) return "gemini";
+	if (available.duckduckgo) return "duckduckgo";
+	return "duckduckgo";
+}
+
 function resolveProvider(
 	requested: string | undefined,
-	available: { perplexity: boolean; gemini: boolean },
+	available: ProviderAvailability,
 ): string {
 	const provider = requested || loadConfig().provider || "auto";
 	if (provider === "auto" || provider === "") {
-		if (available.perplexity) return "perplexity";
-		if (available.gemini) return "gemini";
-		return "perplexity";
+		return pickBestProvider(available);
 	}
-	if (provider === "perplexity" && !available.perplexity) {
-		return available.gemini ? "gemini" : "perplexity";
-	}
-	if (provider === "gemini" && !available.gemini) {
-		return available.perplexity ? "perplexity" : "gemini";
-	}
+	if (provider === "perplexity" && !available.perplexity) return pickBestProvider(available);
+	if (provider === "brave" && !available.brave) return pickBestProvider(available);
+	if (provider === "searxng" && !available.searxng) return pickBestProvider(available);
+	if (provider === "gemini" && !available.gemini) return pickBestProvider(available);
+	if (provider === "duckduckgo" && !available.duckduckgo) return pickBestProvider(available);
 	return provider;
 }
 
@@ -113,7 +130,7 @@ interface PendingCurate {
 	numResults?: number;
 	recencyFilter?: "day" | "week" | "month" | "year";
 	domainFilter?: string[];
-	availableProviders: { perplexity: boolean; gemini: boolean };
+	availableProviders: ProviderAvailability;
 	defaultProvider: string;
 	onUpdate: ((update: { content: Array<{ type: string; text: string }>; details?: Record<string, unknown> }) => void) | undefined;
 	signal: AbortSignal | undefined;
@@ -577,7 +594,7 @@ export default function (pi: ExtensionAPI) {
 		name: "web_search",
 		label: "Web Search",
 		description:
-			`Search the web using Perplexity AI or Gemini. Returns an AI-synthesized answer with source citations. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background. Multi-query searches include a brief review window where the user can press ${curateLabel} to curate results in the browser before they're sent. Set curate to false to skip this. Provider auto-selects: Perplexity if configured, else Gemini API (needs key), else Gemini Web (needs Chrome login).`,
+			`Search the web using Perplexity, Brave Search, SearXNG, Gemini, or DuckDuckGo. Returns an AI-synthesized answer with source citations. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background. Multi-query searches include a brief review window where the user can press ${curateLabel} to curate results in the browser before they're sent. Set curate to false to skip this. Provider auto-selects: Perplexity, then Brave, then SearXNG, then Gemini, then DuckDuckGo.`,
 		parameters: Type.Object({
 			query: Type.Optional(Type.String({ description: "Single search query. For research tasks, prefer 'queries' with multiple varied angles instead." })),
 			queries: Type.Optional(Type.Array(Type.String(), { description: "Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['React vs Vue performance benchmarks 2026', 'React vs Vue developer experience comparison', 'React ecosystem size vs Vue ecosystem']. Bad: ['React vs Vue', 'React vs Vue comparison', 'React vs Vue review'] (too similar, redundant results)." })),
@@ -588,7 +605,7 @@ export default function (pi: ExtensionAPI) {
 			),
 			domainFilter: Type.Optional(Type.Array(Type.String(), { description: "Limit to domains (prefix with - to exclude)" })),
 			provider: Type.Optional(
-				StringEnum(["auto", "perplexity", "gemini"], { description: "Search provider (default: auto)" }),
+				StringEnum(["auto", "perplexity", "brave", "searxng", "gemini", "duckduckgo"], { description: "Search provider (default: auto)" }),
 			),
 			curate: Type.Optional(Type.Boolean({
 				description: `Hold results for review after searching. The user can press ${curateLabel} to open an interactive review page in the browser, or wait for the countdown to auto-send all results. Enabled by default for multi-query searches. Set to false to skip the review window.`,
@@ -620,11 +637,17 @@ export default function (pi: ExtensionAPI) {
 				let cancelled = false;
 
 				const pplxAvail = isPerplexityAvailable();
+				const braveAvail = isBraveAvailable();
+				const searxngAvail = isSearxngAvailable();
+				const duckduckgoAvail = isDuckDuckGoAvailable();
 				const geminiApiAvail = isGeminiApiAvailable();
 				const geminiWebAvail = await isGeminiWebAvailable();
 				const availableProviders = {
 					perplexity: pplxAvail,
+					brave: braveAvail,
+					searxng: searxngAvail,
 					gemini: geminiApiAvail || !!geminiWebAvail,
+					duckduckgo: duckduckgoAvail,
 				};
 				const defaultProvider = resolveProvider(params.provider, availableProviders);
 				const curateConfig = loadConfig();
@@ -1442,11 +1465,17 @@ export default function (pi: ExtensionAPI) {
 			const queries = args.trim() ? args.trim().split(/\s*,\s*/) : [];
 
 			const pplxAvail = isPerplexityAvailable();
+			const braveAvail = isBraveAvailable();
+			const searxngAvail = isSearxngAvailable();
+			const duckduckgoAvail = isDuckDuckGoAvailable();
 			const geminiApiAvail = isGeminiApiAvailable();
 			const geminiWebAvail = await isGeminiWebAvailable();
 			const availableProviders = {
 				perplexity: pplxAvail,
+				brave: braveAvail,
+				searxng: searxngAvail,
 				gemini: geminiApiAvail || !!geminiWebAvail,
+				duckduckgo: duckduckgoAvail,
 			};
 			const defaultProvider = resolveProvider(undefined, availableProviders);
 

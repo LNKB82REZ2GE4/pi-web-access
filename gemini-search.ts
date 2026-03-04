@@ -5,23 +5,33 @@ import { activityMonitor } from "./activity.js";
 import { getApiKey, API_BASE, DEFAULT_MODEL } from "./gemini-api.js";
 import { isGeminiWebAvailable, queryWithCookies } from "./gemini-web.js";
 import { isPerplexityAvailable, searchWithPerplexity, type SearchResult, type SearchResponse, type SearchOptions } from "./perplexity.js";
+import { isBraveAvailable, searchWithBrave } from "./brave-search.js";
+import { isSearxngAvailable, searchWithSearxng } from "./searxng-search.js";
+import { isDuckDuckGoAvailable, searchWithDuckDuckGo } from "./duckduckgo-search.js";
 
-export type SearchProvider = "auto" | "perplexity" | "gemini";
+export type SearchProvider = "auto" | "perplexity" | "brave" | "searxng" | "gemini" | "duckduckgo";
 
 const CONFIG_PATH = join(homedir(), ".pi", "web-search.json");
 
-let cachedSearchConfig: { searchProvider: SearchProvider } | null = null;
+let cachedSearchConfig: { provider: SearchProvider } | null = null;
 
-function getSearchConfig(): { searchProvider: SearchProvider } {
+function parseProvider(raw: unknown): SearchProvider {
+	if (raw === "perplexity" || raw === "brave" || raw === "searxng" || raw === "gemini" || raw === "duckduckgo" || raw === "auto") {
+		return raw;
+	}
+	return "auto";
+}
+
+function getSearchConfig(): { provider: SearchProvider } {
 	if (cachedSearchConfig) return cachedSearchConfig;
 	try {
 		if (existsSync(CONFIG_PATH)) {
 			const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
-			cachedSearchConfig = { searchProvider: raw.searchProvider ?? "auto" };
+			cachedSearchConfig = { provider: parseProvider(raw.provider ?? raw.searchProvider) };
 			return cachedSearchConfig;
 		}
 	} catch {}
-	cachedSearchConfig = { searchProvider: "auto" };
+	cachedSearchConfig = { provider: "auto" };
 	return cachedSearchConfig;
 }
 
@@ -29,13 +39,19 @@ export interface FullSearchOptions extends SearchOptions {
 	provider?: SearchProvider;
 }
 
+function isAbortError(err: unknown): boolean {
+	const msg = err instanceof Error ? err.message : String(err);
+	return msg.toLowerCase().includes("abort");
+}
+
 export async function search(query: string, options: FullSearchOptions = {}): Promise<SearchResponse> {
 	const config = getSearchConfig();
-	const provider = options.provider ?? config.searchProvider;
+	const provider = options.provider ?? config.provider;
 
-	if (provider === "perplexity") {
-		return searchWithPerplexity(query, options);
-	}
+	if (provider === "perplexity") return searchWithPerplexity(query, options);
+	if (provider === "brave") return searchWithBrave(query, options);
+	if (provider === "searxng") return searchWithSearxng(query, options);
+	if (provider === "duckduckgo") return searchWithDuckDuckGo(query, options);
 
 	if (provider === "gemini") {
 		const result = await searchWithGeminiApi(query, options)
@@ -43,24 +59,38 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 		if (result) return result;
 		throw new Error(
 			"Gemini search unavailable. Either:\n" +
-			"  1. Set GEMINI_API_KEY in ~/.pi/web-search.json\n" +
+			"  1. Set GEMINI_API_KEY (env) or geminiApiKey in ~/.pi/web-search.json\n" +
 			"  2. Sign into gemini.google.com in Chrome"
 		);
 	}
 
-	if (isPerplexityAvailable()) {
-		return searchWithPerplexity(query, options);
+	const attempts: Array<() => Promise<SearchResponse | null>> = [];
+	if (isPerplexityAvailable()) attempts.push(async () => searchWithPerplexity(query, options));
+	if (isBraveAvailable()) attempts.push(async () => searchWithBrave(query, options));
+	if (isSearxngAvailable()) attempts.push(async () => searchWithSearxng(query, options));
+	attempts.push(async () => await searchWithGeminiApi(query, options));
+	attempts.push(async () => await searchWithGeminiWeb(query, options));
+	if (isDuckDuckGoAvailable()) attempts.push(async () => searchWithDuckDuckGo(query, options));
+
+	let lastError: Error | null = null;
+	for (const attempt of attempts) {
+		try {
+			const result = await attempt();
+			if (result) return result;
+		} catch (err) {
+			if (isAbortError(err)) throw err;
+			lastError = err instanceof Error ? err : new Error(String(err));
+		}
 	}
 
-	const geminiResult = await searchWithGeminiApi(query, options)
-		?? await searchWithGeminiWeb(query, options);
-	if (geminiResult) return geminiResult;
-
 	throw new Error(
-		"No search provider available. Either:\n" +
-		"  1. Set perplexityApiKey in ~/.pi/web-search.json\n" +
-		"  2. Set GEMINI_API_KEY in ~/.pi/web-search.json\n" +
-		"  3. Sign into gemini.google.com in Chrome"
+		(lastError ? `${lastError.message}\n\n` : "") +
+		"No search provider available. Configure one of:\n" +
+		"  1. perplexityApiKey (or PERPLEXITY_API_KEY)\n" +
+		"  2. braveApiKey (or BRAVE_API_KEY)\n" +
+		"  3. searxng.baseUrl (or SEARXNG_BASE_URL)\n" +
+		"  4. geminiApiKey (or GEMINI_API_KEY), or Chrome Gemini login\n" +
+		"  5. duckduckgo provider (no key)"
 	);
 }
 

@@ -18,7 +18,7 @@ https://github.com/user-attachments/assets/cac6a17a-1eeb-4dde-9818-cdf85d8ea98f
 
 **Video Understanding** — Point it at a YouTube video or local screen recording and ask questions about what's on screen. Full transcripts, visual descriptions, and frame extraction at exact timestamps.
 
-**Smart Fallbacks** — Every capability has a fallback chain. Search tries Perplexity, then Gemini API, then Gemini Web. YouTube tries Gemini Web, then API, then Perplexity. Blocked pages retry through Jina Reader and Gemini extraction. Something always works.
+**Smart Fallbacks** — Every capability has a fallback chain. Search tries Perplexity, then Brave Search, then SearXNG, then Gemini API, then Gemini Web, then DuckDuckGo. YouTube tries Gemini Web, then API, then Perplexity. Blocked pages retry through Jina Reader and Gemini extraction. Something always works.
 
 **GitHub Cloning** — GitHub URLs are cloned locally instead of scraped. The agent gets real file contents and a local path to explore, not rendered HTML.
 
@@ -33,11 +33,16 @@ If you're not signed into Chrome, or prefer a different provider, add API keys t
 ```json
 {
   "perplexityApiKey": "pplx-...",
-  "geminiApiKey": "AIza..."
+  "braveApiKey": "BSA...",
+  "geminiApiKey": "AIza...",
+  "searxng": {
+    "baseUrl": "http://127.0.0.1:8088",
+    "apiKey": ""
+  }
 }
 ```
 
-You can configure one or both. In `auto` mode (default), `web_search` tries Perplexity first, then Gemini API, then Gemini Web.
+You can configure any combination. In `auto` mode (default), `web_search` tries Perplexity first, then Brave Search, then SearXNG, then Gemini API, then Gemini Web, then DuckDuckGo.
 
 Optional dependencies for video frame extraction:
 
@@ -81,6 +86,9 @@ web_search({ queries: ["query 1", "query 2"] })
 web_search({ query: "latest news", numResults: 10, recencyFilter: "week" })
 web_search({ query: "...", domainFilter: ["github.com"] })
 web_search({ query: "...", provider: "gemini" })
+web_search({ query: "...", provider: "brave" })
+web_search({ query: "...", provider: "searxng" })
+web_search({ query: "...", provider: "duckduckgo" })
 web_search({ query: "...", includeContent: true })
 web_search({ queries: ["query 1", "query 2"], curate: true })
 ```
@@ -91,7 +99,7 @@ web_search({ queries: ["query 1", "query 2"], curate: true })
 | `numResults` | Results per query (default: 5, max: 20) |
 | `recencyFilter` | `day`, `week`, `month`, or `year` |
 | `domainFilter` | Limit to domains (prefix with `-` to exclude) |
-| `provider` | `auto` (default), `perplexity`, or `gemini` |
+| `provider` | `auto` (default), `perplexity`, `brave`, `searxng`, `gemini`, or `duckduckgo` |
 | `includeContent` | Fetch full page content from sources in background |
 | `curate` | Hold results for browser review (default: true for multi-query). Press Ctrl+Shift+S to open browser UI, or wait for countdown to auto-condense and send. Set to false to skip both curation and condensation. |
 
@@ -222,7 +230,12 @@ All config lives in `~/.pi/web-search.json`. Every field is optional.
 ```json
 {
   "perplexityApiKey": "pplx-...",
+  "braveApiKey": "BSA...",
   "geminiApiKey": "AIza...",
+  "searxng": {
+    "baseUrl": "http://127.0.0.1:8088",
+    "apiKey": ""
+  },
   "provider": "perplexity",
   "curateWindow": 10,
   "autoFilter": true,
@@ -248,7 +261,7 @@ All config lives in `~/.pi/web-search.json`. Every field is optional.
 }
 ```
 
-`GEMINI_API_KEY` and `PERPLEXITY_API_KEY` env vars take precedence over config file values. `provider` sets the default search provider: `"perplexity"` or `"gemini"`. This is also updated automatically when you change the provider in the curator UI. `curateWindow` controls how many seconds multi-query searches wait before auto-sending results (default: 10). During the countdown, press Ctrl+Shift+S to open the browser curator. Set to 0 to always send immediately (Ctrl+Shift+S still works during the search itself).
+`GEMINI_API_KEY`, `PERPLEXITY_API_KEY`, `BRAVE_API_KEY`, and `SEARXNG_BASE_URL`/`SEARXNG_API_KEY` env vars take precedence over config file values. `provider` sets the default search provider: `"perplexity"`, `"brave"`, `"searxng"`, `"gemini"`, or `"duckduckgo"`. This is also updated automatically when you change the provider in the curator UI. `curateWindow` controls how many seconds multi-query searches wait before auto-sending results (default: 10). During the countdown, press Ctrl+Shift+S to open the browser curator. Set to 0 to always send immediately (Ctrl+Shift+S still works during the search itself).
 
 ### Shortcuts
 
@@ -324,6 +337,9 @@ Rate limits: Perplexity is capped at 10 requests/minute (client-side). Content f
 | `github-extract.ts` | GitHub URL parsing, clone cache, content generation |
 | `github-api.ts` | GitHub API fallback for large repos and commit SHAs |
 | `perplexity.ts` | Perplexity API client with rate limiting |
+| `brave-search.ts` | Brave Search API client |
+| `searxng-search.ts` | SearXNG JSON API client |
+| `duckduckgo-search.ts` | DuckDuckGo HTML search fallback |
 | `pdf-extract.ts` | PDF text extraction, saves to markdown |
 | `rsc-extract.ts` | RSC flight data parser for Next.js pages |
 | `utils.ts` | Shared formatting and error helpers |

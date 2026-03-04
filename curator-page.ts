@@ -14,12 +14,15 @@ function safeInlineJSON(data: unknown): string {
 }
 
 function buildProviderOptions(
-	available: { perplexity: boolean; gemini: boolean },
+	available: { perplexity: boolean; brave: boolean; searxng: boolean; gemini: boolean; duckduckgo: boolean },
 	selected: string,
 ): string {
 	const options = [
 		{ value: "perplexity", label: "Perplexity", disabled: !available.perplexity },
+		{ value: "brave", label: "Brave", disabled: !available.brave },
+		{ value: "searxng", label: "SearXNG", disabled: !available.searxng },
 		{ value: "gemini", label: "Gemini", disabled: !available.gemini },
+		{ value: "duckduckgo", label: "DuckDuckGo", disabled: !available.duckduckgo },
 	];
 
 	return options
@@ -31,7 +34,7 @@ export function generateCuratorPage(
 	queries: string[],
 	sessionToken: string,
 	timeout: number,
-	availableProviders: { perplexity: boolean; gemini: boolean },
+	availableProviders: { perplexity: boolean; brave: boolean; searxng: boolean; gemini: boolean; duckduckgo: boolean },
 	defaultProvider: string,
 ): string {
 	const providerOptionsHtml = buildProviderOptions(availableProviders, defaultProvider);
