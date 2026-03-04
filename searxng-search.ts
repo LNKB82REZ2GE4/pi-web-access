@@ -5,17 +5,26 @@ import { activityMonitor } from "./activity.js";
 import type { SearchOptions, SearchResponse, SearchResult } from "./perplexity.js";
 
 const CONFIG_PATH = join(homedir(), ".pi", "web-search.json");
+const DEFAULT_EXCLUDE_DOMAINS = [
+	"zhihu.com",
+	"zhidao.baidu.com",
+	"baidu.com",
+];
 
 interface SearxngConfigFile {
 	searxng?: {
 		baseUrl?: string;
 		apiKey?: string;
+		language?: string;
+		excludeDomains?: string[];
 	};
 }
 
 interface SearxngConfig {
 	baseUrl: string | null;
 	apiKey: string | null;
+	language: string | null;
+	excludeDomains: string[];
 }
 
 let cachedConfig: SearxngConfig | null = null;
@@ -40,10 +49,16 @@ function loadConfig(): SearxngConfig {
 	const fileBase = file.searxng?.baseUrl?.trim();
 	const envKey = process.env.SEARXNG_API_KEY?.trim();
 	const fileKey = file.searxng?.apiKey?.trim();
+	const envLanguage = process.env.SEARXNG_LANGUAGE?.trim();
+	const fileLanguage = file.searxng?.language?.trim();
+	const envExcludes = process.env.SEARXNG_EXCLUDE_DOMAINS?.split(",").map((d) => d.trim()).filter(Boolean) ?? [];
+	const fileExcludes = file.searxng?.excludeDomains?.map((d) => d.trim()).filter(Boolean) ?? [];
 
 	cachedConfig = {
 		baseUrl: envBase ? normalizeBaseUrl(envBase) : (fileBase ? normalizeBaseUrl(fileBase) : null),
 		apiKey: envKey || fileKey || null,
+		language: envLanguage || fileLanguage || null,
+		excludeDomains: [...new Set([...DEFAULT_EXCLUDE_DOMAINS, ...fileExcludes, ...envExcludes].map((d) => d.toLowerCase()))],
 	};
 	return cachedConfig;
 }
@@ -56,13 +71,13 @@ function extractDomain(url: string): string {
 	}
 }
 
-function matchesDomainFilter(url: string, filters: string[] | undefined): boolean {
-	if (!filters?.length) return true;
+function matchesDomainFilter(url: string, filters: string[] | undefined, implicitExcludes: string[] = []): boolean {
 	const domain = extractDomain(url);
 	if (!domain) return false;
 
-	const includes = filters.filter((f) => !f.startsWith("-")).map((f) => f.toLowerCase());
-	const excludes = filters.filter((f) => f.startsWith("-")).map((f) => f.slice(1).toLowerCase());
+	const includes = filters?.filter((f) => !f.startsWith("-")).map((f) => f.toLowerCase()) ?? [];
+	const explicitExcludes = filters?.filter((f) => f.startsWith("-")).map((f) => f.slice(1).toLowerCase()) ?? [];
+	const excludes = [...explicitExcludes, ...implicitExcludes];
 
 	if (includes.length > 0 && !includes.some((d) => domain === d || domain.endsWith(`.${d}`))) return false;
 	if (excludes.some((d) => domain === d || domain.endsWith(`.${d}`))) return false;
@@ -78,6 +93,20 @@ function mapTimeRange(recency: SearchOptions["recencyFilter"]): string | null {
 		year: "year",
 	};
 	return map[recency] ?? null;
+}
+
+function inferCategories(query: string): string {
+	const q = query.toLowerCase();
+	const has = (re: RegExp) => re.test(q);
+
+	const tech = has(/\b(code|coding|programming|developer|api|sdk|library|framework|python|javascript|typescript|node|npm|pip|uv|docker|kubernetes|linux|git|github|stack ?overflow|bug|debug)\b/);
+	const academic = has(/\b(paper|research|journal|study|systematic review|literature review|meta-analysis|arxiv|pubmed|semantic scholar|springer|doi|citation)\b/);
+	const newsOrFinance = has(/\b(news|latest|breaking|market|markets|stocks?|equity|bond|fed|inflation|cpi|gdp|earnings|financial|finance|reuters|bloomberg|ft|wsj)\b/);
+
+	if (tech) return "general,it,q&a,packages";
+	if (academic) return "general,science";
+	if (newsOrFinance) return "general,news";
+	return "general";
 }
 
 export function isSearxngAvailable(): boolean {
@@ -107,7 +136,8 @@ export async function searchWithSearxng(query: string, options: SearchOptions = 
 	const params = new URLSearchParams();
 	params.set("q", query);
 	params.set("format", "json");
-	params.set("language", "all");
+	params.set("categories", inferCategories(query));
+	if (config.language) params.set("language", config.language);
 	params.set("safesearch", "0");
 	const timeRange = mapTimeRange(options.recencyFilter);
 	if (timeRange) params.set("time_range", timeRange);
@@ -144,7 +174,7 @@ export async function searchWithSearxng(query: string, options: SearchOptions = 
 	const results: SearchResult[] = [];
 	for (const item of data.results ?? []) {
 		const url = item.url?.trim();
-		if (!url || seen.has(url) || !matchesDomainFilter(url, options.domainFilter)) continue;
+		if (!url || seen.has(url) || !matchesDomainFilter(url, options.domainFilter, config.excludeDomains)) continue;
 		seen.add(url);
 		results.push({
 			title: item.title?.trim() || "Untitled",
