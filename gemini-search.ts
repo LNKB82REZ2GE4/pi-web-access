@@ -8,15 +8,21 @@ import { isPerplexityAvailable, searchWithPerplexity, type SearchResult, type Se
 import { isBraveAvailable, searchWithBrave } from "./brave-search.js";
 import { isSearxngAvailable, searchWithSearxng } from "./searxng-search.js";
 import { isDuckDuckGoAvailable, searchWithDuckDuckGo } from "./duckduckgo-search.js";
+import { isSemanticScholarAvailable, searchWithSemanticScholar } from "./semantic-scholar-search.js";
+import { isArxivAvailable, searchWithArxiv } from "./arxiv-search.js";
 
-export type SearchProvider = "auto" | "perplexity" | "brave" | "searxng" | "gemini" | "duckduckgo";
+export type SearchProvider = "auto" | "perplexity" | "brave" | "searxng" | "gemini" | "duckduckgo" | "semantic-scholar" | "arxiv";
 
 const CONFIG_PATH = join(homedir(), ".pi", "web-search.json");
 
 let cachedSearchConfig: { provider: SearchProvider } | null = null;
 
 function parseProvider(raw: unknown): SearchProvider {
-	if (raw === "perplexity" || raw === "brave" || raw === "searxng" || raw === "gemini" || raw === "duckduckgo" || raw === "auto") {
+	if (
+		raw === "perplexity" || raw === "brave" || raw === "searxng" ||
+		raw === "gemini" || raw === "duckduckgo" || raw === "auto" ||
+		raw === "semantic-scholar" || raw === "arxiv"
+	) {
 		return raw;
 	}
 	return "auto";
@@ -44,14 +50,23 @@ function isAbortError(err: unknown): boolean {
 	return msg.toLowerCase().includes("abort");
 }
 
+/** Detect whether the query looks like it targets academic literature. */
+function isAcademicQuery(query: string): boolean {
+	const q = query.toLowerCase();
+	return /\b(paper|papers|preprint|preprints|research|journal|study|studies|review|meta-analysis|arxiv|pubmed|semantic scholar|doi|citation|citations|abstract|findings|evidence|methodology|empirical|cohort|randomized|rct|clinical trial|hypothesis|dataset|benchmark|llm|transformer|diffusion model|neural network|deep learning|machine learning|nlp|bioinformatics|genomics|proteomics|neuroscience)\b/.test(q);
+}
+
 export async function search(query: string, options: FullSearchOptions = {}): Promise<SearchResponse> {
 	const config = getSearchConfig();
 	const provider = options.provider ?? config.provider;
 
+	// Explicit provider routing
 	if (provider === "perplexity") return searchWithPerplexity(query, options);
 	if (provider === "brave") return searchWithBrave(query, options);
 	if (provider === "searxng") return searchWithSearxng(query, options);
 	if (provider === "duckduckgo") return searchWithDuckDuckGo(query, options);
+	if (provider === "semantic-scholar") return searchWithSemanticScholar(query, options);
+	if (provider === "arxiv") return searchWithArxiv(query, options);
 
 	if (provider === "gemini") {
 		const result = await searchWithGeminiApi(query, options)
@@ -64,12 +79,26 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 		);
 	}
 
+	// Auto waterfall — academic queries prefer structured academic APIs first
+	const academic = isAcademicQuery(query);
 	const attempts: Array<() => Promise<SearchResponse | null>> = [];
+
+	if (academic) {
+		// Academic-first order: S2 → arXiv → SearXNG → Brave → Gemini → Perplexity → DDG
+		if (isSemanticScholarAvailable()) attempts.push(async () => searchWithSemanticScholar(query, options));
+		if (isArxivAvailable()) attempts.push(async () => searchWithArxiv(query, options));
+	}
+
 	if (isSearxngAvailable()) attempts.push(async () => searchWithSearxng(query, options));
 	if (isBraveAvailable()) attempts.push(async () => searchWithBrave(query, options));
 	attempts.push(async () => await searchWithGeminiApi(query, options));
 	if (isPerplexityAvailable()) attempts.push(async () => searchWithPerplexity(query, options));
 	if (isDuckDuckGoAvailable()) attempts.push(async () => searchWithDuckDuckGo(query, options));
+
+	// For non-academic queries also include academic providers at the end as a fallback
+	if (!academic) {
+		if (isSemanticScholarAvailable()) attempts.push(async () => searchWithSemanticScholar(query, options));
+	}
 
 	let lastError: Error | null = null;
 	for (const attempt of attempts) {
@@ -89,7 +118,8 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 		"  2. braveApiKey (or BRAVE_API_KEY)\n" +
 		"  3. searxng.baseUrl (or SEARXNG_BASE_URL)\n" +
 		"  4. geminiApiKey (or GEMINI_API_KEY), or Chrome Gemini login\n" +
-		"  5. duckduckgo provider (no key)"
+		"  5. semantic-scholar or arxiv (no key required)\n" +
+		"  6. duckduckgo provider (no key)"
 	);
 }
 
@@ -214,20 +244,24 @@ async function resolveGroundingChunks(
 ): Promise<SearchResult[]> {
 	if (!chunks?.length) return [];
 
-	const results: SearchResult[] = [];
-	for (const chunk of chunks) {
-		if (!chunk.web) continue;
-		const title = chunk.web.title || "";
-		let url = chunk.web.uri || "";
+	// Resolve all redirects in parallel rather than sequentially
+	const settled = await Promise.all(
+		chunks.map(async (chunk) => {
+			if (!chunk.web) return null;
+			const title = chunk.web.title || "";
+			let url = chunk.web.uri || "";
+			if (!url) return null;
 
-		if (url.includes("vertexaisearch.cloud.google.com/grounding-api-redirect")) {
-			const resolved = await resolveRedirect(url, signal);
-			if (resolved) url = resolved;
-		}
+			if (url.includes("vertexaisearch.cloud.google.com/grounding-api-redirect")) {
+				const resolved = await resolveRedirect(url, signal);
+				if (resolved) url = resolved;
+			}
 
-		if (url) results.push({ title, url, snippet: "" });
-	}
-	return results;
+			return { title, url, snippet: "" } as SearchResult;
+		}),
+	);
+
+	return settled.filter((r): r is SearchResult => r !== null);
 }
 
 async function resolveRedirect(proxyUrl: string, signal?: AbortSignal): Promise<string | null> {

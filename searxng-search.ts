@@ -99,12 +99,16 @@ function inferCategories(query: string): string {
 	const q = query.toLowerCase();
 	const has = (re: RegExp) => re.test(q);
 
-	const tech = has(/\b(code|coding|programming|developer|api|sdk|library|framework|python|javascript|typescript|node|npm|pip|uv|docker|kubernetes|linux|git|github|stack ?overflow|bug|debug)\b/);
-	const academic = has(/\b(paper|research|journal|study|systematic review|literature review|meta-analysis|arxiv|pubmed|semantic scholar|springer|doi|citation)\b/);
-	const newsOrFinance = has(/\b(news|latest|breaking|market|markets|stocks?|equity|bond|fed|inflation|cpi|gdp|earnings|financial|finance|reuters|bloomberg|ft|wsj)\b/);
+	const tech = has(/\b(code|coding|programming|developer|api|sdk|library|framework|python|javascript|typescript|node|npm|pip|uv|docker|kubernetes|linux|git|github|stack ?overflow|bug|debug|algorithm|function|module|package|cli|bash|shell|regex|sql|database|orm|frontend|backend|devops|ci\/cd)\b/);
+
+	// Broad academic/scientific detection — many queries won't use the word "paper" but are clearly academic
+	const academic = has(
+		/\b(paper|preprint|preprints|research|journal|study|studies|systematic review|scoping review|literature review|meta-analysis|meta analysis|arxiv|pubmed|medline|semantic scholar|springer|nature|science|cell|lancet|nejm|bmj|jama|ieee|acm|doi|citation|citations|abstract|finding|findings|evidence|methodology|methods|empirical|cohort|randomized|rct|controlled trial|clinical trial|hypothesis|dataset|benchmark|survey|review article|conference paper|proceedings|thesis|dissertation|biomedical|bioinformatics|genomics|proteomics|epidemiology|neuroscience|machine learning|deep learning|neural network|transformer|diffusion model|large language model|llm|nlp|natural language|computer vision|reinforcement learning|gradient|backprop|fine.?tun|quantization|embedding|vector store|attention mechanism|bert|gpt)\b/,
+	);
+	const newsOrFinance = has(/\b(news|latest|breaking|market|markets|stocks?|equity|bond|fed|inflation|cpi|gdp|earnings|financial|finance|reuters|bloomberg|ft|wsj|economic|economy|geopolit)\b/);
 
 	if (tech) return "general,it,q&a,packages";
-	if (academic) return "general,science";
+	if (academic) return "general,science,scholar";
 	if (newsOrFinance) return "general,news";
 	return "general";
 }
@@ -184,9 +188,15 @@ export async function searchWithSearxng(query: string, options: SearchOptions = 
 		if (results.length >= numResults) break;
 	}
 
-	const answer = (data.answer?.trim() || (results.length > 0
-		? `Found ${results.length} SearXNG results for: ${query}`
-		: `No SearXNG results found for: ${query}`));
+	// Build a meaningful answer from snippets when the API doesn't provide one
+	const answer = data.answer?.trim()
+		|| (results.length > 0
+			? results
+				.filter(r => r.snippet)
+				.slice(0, 5)
+				.map(r => `**${r.title}**: ${r.snippet}`)
+				.join("\n\n") || `Found ${results.length} results for: ${query}`
+			: `No SearXNG results found for: ${query}`);
 
 	return { answer, results };
 }

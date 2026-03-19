@@ -15,6 +15,8 @@ export interface PDFExtractResult {
   pages: number;
   chars: number;
   outputPath: string;
+  /** Full extracted markdown text — returned inline to the agent */
+  content: string;
 }
 
 export interface PDFExtractOptions {
@@ -120,6 +122,7 @@ export async function extractPDFToMarkdown(
     pages: pdf.numPages,
     chars: content.length,
     outputPath,
+    content,
   };
 }
 

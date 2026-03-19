@@ -9,31 +9,69 @@ Rules:
 1. Skip any query results that are clearly irrelevant or off-topic
 2. Organize by topic, not by original query
 3. Remove redundant information — if two results cover the same point, include it once with both sources cited
-4. Preserve specific facts, numbers, code examples, and recommendations
-5. Cite sources inline: "reduced by 18-29% [domain.com]"
-6. End with a full source list (domain + title + URL)
-7. Be thorough but never redundant`;
+4. Preserve specific facts, numbers, code examples, recommendations, and for academic content: methodology, sample sizes, effect sizes, and confidence intervals
+5. For academic sources: note study type (RCT, meta-analysis, systematic review, etc.) when available
+6. For conflicting findings across sources: explicitly flag the conflict and summarize each position
+7. Cite sources inline: "reduced by 18-29% [domain.com]"
+8. End with a full source list (domain + title + URL)
+9. Be thorough but never redundant
+10. Distinguish between preprints and peer-reviewed publications when the tier information is available`;
 
 const DEFAULT_MODEL = "anthropic/claude-haiku-4-5";
-const TIMEOUT_MS = 15000;
-const MAX_TOKENS = 2048;
+const TIMEOUT_MS = 30000;  // was 15000 — academic content synthesis needs more headroom
+const MAX_TOKENS = 4096;   // was 2048 — enough for thorough multi-paper synthesis
 const SKIP_THRESHOLD_TOKENS = 500;
 const REDUNDANT_SIMILARITY_THRESHOLD = 0.7;
 const QUALITY_TIERS: [RegExp, string][] = [
+	// Academic preprint servers
+	[/^(arxiv|biorxiv|medrxiv|chemrxiv|psyarxiv)\.org/, "preprint"],
+	[/^osf\.io/, "preprint"],
+	[/^ssrn\.com/, "preprint"],
+	// Top-tier journals
+	[/^(nature|science|cell)\.com/, "top-journal"],
+	[/^(thelancet|nejm|bmj|jama|jamanetwork|annals\.org|oup\.com|academic\.oup)/, "top-journal"],
+	// Academic databases / aggregators
+	[/^(pubmed\.ncbi\.nlm\.nih|pmc\.ncbi\.nlm\.nih|ncbi\.nlm\.nih)\.gov/, "biomedical-db"],
+	[/^semanticscholar\.org/, "academic-db"],
+	[/^openalex\.org/, "academic-db"],
+	[/^base-search\.net/, "academic-db"],
+	// CS venues
+	[/^(dl\.acm|acm)\.org/, "cs-venue"],
+	[/^(ieeexplore\.ieee|proceedings\.ieee|ieee)\.org/, "cs-venue"],
+	[/^(openreview|proceedings\.mlr|papers\.nips|neurips|openaccess\.thecvf|aclanthology)\.(?:net|org|io)/, "cs-venue"],
+	// Publishers
+	[/^(link\.springer|springer|springerlink)\.com/, "publisher"],
+	[/^(sciencedirect|journals\.elsevier)\.com/, "publisher"],
+	[/^(wiley|onlinelibrary\.wiley)\.com/, "publisher"],
+	[/^(tandfonline|informaworld)\.com/, "publisher"],
+	[/^(journals\.plos|plos)\.org/, "open-access-journal"],
+	[/^mdpi\.com/, "open-access-journal"],
+	[/^frontiersin\.org/, "open-access-journal"],
+	[/^hindawi\.com/, "open-access-journal"],
+	[/^researchgate\.net/, "preprint-platform"],
+	// Institutional
 	[/\.(gov|edu)$/, "institutional"],
+	// Developer / code
 	[/^(docs\.|developer\.)/, "official-docs"],
 	[/^github\.com/, "code"],
+	// Community
 	[/^(stackoverflow|stackexchange)\.com/, "forum"],
-	[/^arxiv\.org/, "paper"],
 	[/^news\.ycombinator\.com|^reddit\.com/, "discussion"],
 	[/^medium\.com|^dev\.to$|^substack\.com/, "blog-platform"],
 ];
 const QUALITY_LABELS: Record<string, string> = {
+	preprint: "preprints",
+	"top-journal": "top-tier journals",
+	"biomedical-db": "biomedical databases",
+	"academic-db": "academic databases",
+	"cs-venue": "CS/ML venues",
+	publisher: "academic publishers",
+	"open-access-journal": "open-access journals",
+	"preprint-platform": "preprint platforms",
 	institutional: "institutional sources",
 	"official-docs": "official docs",
 	code: "code repositories",
 	forum: "forum sources",
-	paper: "papers",
 	discussion: "discussion sources",
 	"blog-platform": "blog-platform sources",
 	other: "other sources",

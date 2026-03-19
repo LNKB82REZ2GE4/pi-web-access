@@ -13,6 +13,8 @@ import { formatSeconds } from "./utils.js";
 
 const DEFAULT_TIMEOUT_MS = 30000;
 const CONCURRENT_LIMIT = 3;
+const UNPAYWALL_EMAIL = "pi-agent@localhost";
+const ARXIV_API_BASE = "https://export.arxiv.org/api/query";
 
 const NON_RECOVERABLE_ERRORS = ["Unsupported content type", "Response too large"];
 const MIN_USEFUL_CONTENT = 500;
@@ -181,6 +183,126 @@ async function extractLocalFrames(
 	return { frames, error: frames.length === 0 && firstError ? firstError.error : null };
 }
 
+/** Extract structured metadata from an arXiv abstract or PDF URL via the arXiv Atom API. */
+async function extractArxivMetadata(
+	arxivId: string,
+	url: string,
+	signal?: AbortSignal,
+): Promise<ExtractedContent | null> {
+	try {
+		const apiUrl = `${ARXIV_API_BASE}?id_list=${encodeURIComponent(arxivId)}&max_results=1`;
+		const res = await fetch(apiUrl, {
+			signal: AbortSignal.any([AbortSignal.timeout(15000), ...(signal ? [signal] : [])]),
+			headers: { "Accept": "application/atom+xml" },
+		});
+		if (!res.ok) return null;
+		const xml = await res.text();
+
+		// Parse key fields from Atom XML without a full XML parser
+		const get = (tag: string) => {
+			const m = xml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "i"));
+			return m ? m[1].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim() : "";
+		};
+		const getAll = (tag: string): string[] => {
+			const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "gi");
+			const results: string[] = [];
+			for (const m of xml.matchAll(re)) {
+				results.push(m[1].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim());
+			}
+			return results;
+		};
+
+		const title = get("title").replace(/^Title:\s*/i, "").trim();
+		const summary = get("summary");
+		const published = get("published");
+		const updated = get("updated");
+		const year = published ? published.slice(0, 4) : "";
+
+		// Authors are <author><name>...</name></author>
+		const authorBlocks = xml.match(/<author>[\s\S]*?<\/author>/gi) ?? [];
+		const authors = authorBlocks.map(b => {
+			const nm = b.match(/<name>([^<]+)<\/name>/i);
+			return nm ? nm[1].trim() : "";
+		}).filter(Boolean);
+
+		// Categories
+		const categories = getAll("arxiv:primary_category")
+			.concat(getAll("category"))
+			.map(c => {
+				const tm = c.match(/term="([^"]+)"/);
+				return tm ? tm[1] : c;
+			})
+			.filter(Boolean);
+
+		// DOI if present
+		const doiMatch = xml.match(/<arxiv:doi>([^<]+)<\/arxiv:doi>/i);
+		const doi = doiMatch ? doiMatch[1].trim() : "";
+
+		// Journal ref if present
+		const journalMatch = xml.match(/<arxiv:journal_ref>([^<]+)<\/arxiv:journal_ref>/i);
+		const journalRef = journalMatch ? journalMatch[1].trim() : "";
+
+		if (!title && !summary) return null;
+
+		const lines: string[] = [
+			`# ${title || arxivId}`,
+			"",
+			`> **arXiv:** ${arxivId}  `,
+			`> **URL:** ${url}  `,
+		];
+		if (authors.length) lines.push(`> **Authors:** ${authors.slice(0, 10).join(", ")}${authors.length > 10 ? " et al." : ""}  `);
+		if (year) lines.push(`> **Published:** ${published}  `);
+		if (updated && updated !== published) lines.push(`> **Updated:** ${updated}  `);
+		if (categories.length) lines.push(`> **Categories:** ${[...new Set(categories)].slice(0, 6).join(", ")}  `);
+		if (doi) lines.push(`> **DOI:** https://doi.org/${doi}  `);
+		if (journalRef) lines.push(`> **Journal:** ${journalRef}  `);
+		lines.push("", "---", "", "## Abstract", "", summary || "(no abstract available)");
+
+		return {
+			url,
+			title: title || arxivId,
+			content: lines.join("\n"),
+			error: null,
+		};
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * For DOI URLs, attempt to find an open-access version via Unpaywall before
+ * falling through to normal extraction.  Returns null if nothing useful found.
+ */
+async function resolveDoiOpenAccess(
+	doi: string,
+	signal?: AbortSignal,
+): Promise<string | null> {
+	try {
+		const apiUrl = `https://api.unpaywall.org/v2/${encodeURIComponent(doi)}?email=${UNPAYWALL_EMAIL}`;
+		const res = await fetch(apiUrl, {
+			signal: AbortSignal.any([AbortSignal.timeout(8000), ...(signal ? [signal] : [])]),
+			headers: { "Accept": "application/json" },
+		});
+		if (!res.ok) return null;
+		const data = await res.json() as {
+			best_oa_location?: { url?: string; url_for_pdf?: string } | null;
+			oa_locations?: Array<{ url?: string; url_for_pdf?: string }>;
+		};
+
+		// Prefer a PDF link, then any OA URL
+		const best = data.best_oa_location;
+		if (best?.url_for_pdf) return best.url_for_pdf;
+		if (best?.url) return best.url;
+		for (const loc of data.oa_locations ?? []) {
+			if (loc.url_for_pdf) return loc.url_for_pdf;
+			if (loc.url) return loc.url;
+		}
+		return null;
+	} catch {
+		return null;
+	}
+}
+
 export async function extractContent(
 	url: string,
 	signal?: AbortSignal,
@@ -321,6 +443,26 @@ export async function extractContent(
 		return { url, title: "", content: "", error: "Invalid URL" };
 	}
 
+	// --- arXiv structured extraction (abs page only — PDF URLs fall through to full PDF extraction) ---
+	const arxivAbsMatch = url.match(/arxiv\.org\/abs\/(\d+\.\d+(?:v\d+)?)/i);
+	if (arxivAbsMatch) {
+		const arxivResult = await extractArxivMetadata(arxivAbsMatch[1], url, signal);
+		if (arxivResult) return arxivResult;
+		// Fall through to generic HTML extraction if API fails
+	}
+
+	// --- DOI open-access resolution ---
+	const doiMatch = url.match(/^https?:\/\/(?:dx\.)?doi\.org\/(.+)/i);
+	if (doiMatch) {
+		const oaUrl = await resolveDoiOpenAccess(doiMatch[1], signal);
+		if (oaUrl && oaUrl !== url) {
+			// Recursively extract from the OA version; if it fails, continue with original URL
+			const oaResult = await extractContent(oaUrl, signal, options);
+			if (!oaResult.error) return { ...oaResult, url };
+		}
+		// Fall through to normal HTTP extraction of the DOI redirect
+	}
+
 	try {
 		const ghResult = await extractGitHub(url, signal, options?.forceClone);
 		if (ghResult) return ghResult;
@@ -448,10 +590,13 @@ async function extractViaHttp(
 				const buffer = await response.arrayBuffer();
 				const result = await extractPDFToMarkdown(buffer, url);
 				activityMonitor.logComplete(activityId, response.status);
+				// Return the full extracted text inline so agents can read the paper.
+				// Also include a footer note pointing to the saved file for human reference.
+				const footer = `\n\n---\n*PDF also saved to: ${result.outputPath} (${result.pages} pages, ${result.chars.toLocaleString()} chars)*`;
 				return {
 					url,
 					title: result.title,
-					content: `PDF extracted and saved to: ${result.outputPath}\n\nPages: ${result.pages}\nCharacters: ${result.chars}`,
+					content: result.content + footer,
 					error: null,
 				};
 			} catch (err) {

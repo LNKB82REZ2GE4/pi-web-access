@@ -104,9 +104,14 @@ export async function searchWithBrave(query: string, options: SearchOptions = {}
 	const activityId = activityMonitor.logStart({ type: "api", query: `brave: ${query}` });
 	const numResults = Math.min(options.numResults ?? 5, 20);
 
+	// When a domain include-filter is set, request more raw results so post-filtering
+	// has a better chance of finding matches within those domains.
+	const hasDomainIncludes = options.domainFilter?.some(f => !f.startsWith("-"));
+	const rawCount = hasDomainIncludes ? Math.min(50, numResults * 10) : numResults;
+
 	const params = new URLSearchParams();
 	params.set("q", query);
-	params.set("count", String(numResults));
+	params.set("count", String(rawCount));
 	const freshness = mapRecency(options.recencyFilter);
 	if (freshness) params.set("freshness", freshness);
 
@@ -152,8 +157,13 @@ export async function searchWithBrave(query: string, options: SearchOptions = {}
 		if (results.length >= numResults) break;
 	}
 
+	// Build a meaningful answer from snippets so agents have context without fetching each URL
 	const answer = results.length > 0
-		? `Found ${results.length} Brave web results for: ${query}`
+		? results
+			.filter(r => r.snippet)
+			.slice(0, 5)
+			.map(r => `**${r.title}**: ${r.snippet}`)
+			.join("\n\n") || `Found ${results.length} results for: ${query}`
 		: `No Brave results found for: ${query}`;
 
 	return { answer, results };

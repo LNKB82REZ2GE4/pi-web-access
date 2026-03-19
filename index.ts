@@ -30,6 +30,8 @@ import { isSearxngAvailable } from "./searxng-search.js";
 import { isDuckDuckGoAvailable } from "./duckduckgo-search.js";
 import { isGeminiApiAvailable } from "./gemini-api.js";
 import { isGeminiWebAvailable } from "./gemini-web.js";
+import { isSemanticScholarAvailable } from "./semantic-scholar-search.js";
+import { isArxivAvailable } from "./arxiv-search.js";
 import {
 	condenseSearchResults,
 	postProcessCondensed,
@@ -88,6 +90,8 @@ interface ProviderAvailability {
 	searxng: boolean;
 	gemini: boolean;
 	duckduckgo: boolean;
+	semanticScholar: boolean;
+	arxiv: boolean;
 }
 
 function pickBestProvider(available: ProviderAvailability): string {
@@ -111,6 +115,7 @@ function resolveProvider(
 	if (provider === "brave" && !available.brave) return pickBestProvider(available);
 	if (provider === "searxng" && !available.searxng) return pickBestProvider(available);
 	if (provider === "gemini" && !available.gemini) return pickBestProvider(available);
+	// semantic-scholar and arxiv are always available (no key required)
 	if (provider === "duckduckgo" && !available.duckduckgo) return pickBestProvider(available);
 	return provider;
 }
@@ -367,7 +372,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const fetchId = opts.includeContent ? startBackgroundFetch(opts.urls) : null;
-		if (fetchId) output += `---\nContent fetching in background [${fetchId}]. Will notify when ready.`;
+		if (fetchId) output += `---\nContent fetching in background [fetchId="${fetchId}"]. You will be notified when ready. Once notified, retrieve each URL's full text with: get_search_content({ responseId: "${fetchId}", urlIndex: 0 }) (increment urlIndex for each URL).`;
 
 		const searchId = storeAndPublishSearch(opts.results);
 
@@ -413,7 +418,7 @@ export default function (pi: ExtensionAPI) {
 		output += opts.condensed;
 
 		const fetchId = opts.includeContent ? startBackgroundFetch(opts.urls) : null;
-		if (fetchId) output += `\n\n---\nContent fetching in background [${fetchId}]. Will notify when ready.`;
+		if (fetchId) output += `\n\n---\nContent fetching in background [fetchId="${fetchId}"]. You will be notified when ready. Once notified, retrieve each URL's full text with: get_search_content({ responseId: "${fetchId}", urlIndex: 0 }) (increment urlIndex for each URL).`;
 
 		return {
 			content: [{ type: "text", text: output.trim() }],
@@ -594,21 +599,21 @@ export default function (pi: ExtensionAPI) {
 		name: "web_search",
 		label: "Web Search",
 		description:
-			`Search the web using Perplexity, Brave Search, SearXNG, Gemini, or DuckDuckGo. Returns an AI-synthesized answer with source citations. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background. Multi-query searches include a brief review window where the user can press ${curateLabel} to curate results in the browser before they're sent. Set curate to false to skip this. Provider auto-selects: SearXNG, then Brave, then Gemini API, then Perplexity, then DuckDuckGo.`,
+			`Search the web using multiple providers including academic databases. Returns an AI-synthesized answer with source citations. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background (then retrieve with get_search_content). Multi-query searches include a brief review window where the user can press ${curateLabel} to curate results in the browser before they're sent. Set curate to false to skip this (recommended for automated agent pipelines). Provider auto-selects: for academic/research queries → Semantic Scholar then arXiv first, then SearXNG, Brave, Gemini API, Perplexity, DuckDuckGo. For academic literature: use provider='semantic-scholar' or provider='arxiv' directly, increase numResults to 10-15, and use domainFilter to scope to specific venues (e.g. ['arxiv.org', 'semanticscholar.org']). Use recencyFilter to find recent publications.`,
 		parameters: Type.Object({
 			query: Type.Optional(Type.String({ description: "Single search query. For research tasks, prefer 'queries' with multiple varied angles instead." })),
-			queries: Type.Optional(Type.Array(Type.String(), { description: "Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['React vs Vue performance benchmarks 2026', 'React vs Vue developer experience comparison', 'React ecosystem size vs Vue ecosystem']. Bad: ['React vs Vue', 'React vs Vue comparison', 'React vs Vue review'] (too similar, redundant results)." })),
-			numResults: Type.Optional(Type.Number({ description: "Results per query (default: 5, max: 20)" })),
-			includeContent: Type.Optional(Type.Boolean({ description: "Fetch full page content (async)" })),
+			queries: Type.Optional(Type.Array(Type.String(), { description: "Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['transformer attention mechanisms survey 2024', 'self-attention computational complexity analysis', 'attention alternatives linear transformers']. Bad: ['transformers', 'transformer attention', 'attention mechanism'] (too similar, redundant results)." })),
+			numResults: Type.Optional(Type.Number({ description: "Results per query (default: 5, max: 20). For academic literature reviews, use 10-15 to get broader coverage." })),
+			includeContent: Type.Optional(Type.Boolean({ description: "Fetch full page content in the background. After the search returns, call get_search_content with the responseId and urlIndex to retrieve each page's full text." })),
 			recencyFilter: Type.Optional(
 				StringEnum(["day", "week", "month", "year"], { description: "Filter by recency" }),
 			),
-			domainFilter: Type.Optional(Type.Array(Type.String(), { description: "Limit to domains (prefix with - to exclude)" })),
+			domainFilter: Type.Optional(Type.Array(Type.String(), { description: "Limit to domains (prefix with - to exclude). Academic examples: ['arxiv.org'] for preprints, ['pubmed.ncbi.nlm.nih.gov'] for biomedical, ['semanticscholar.org'] for all fields." })),
 			provider: Type.Optional(
-				StringEnum(["auto", "perplexity", "brave", "searxng", "gemini", "duckduckgo"], { description: "Search provider (default: auto)" }),
+				StringEnum(["auto", "perplexity", "brave", "searxng", "gemini", "duckduckgo", "semantic-scholar", "arxiv"], { description: "Search provider (default: auto). Use 'semantic-scholar' for general academic search with abstracts across all fields. Use 'arxiv' for CS/physics/math/biology preprints. Both are free with no API key required." }),
 			),
 			curate: Type.Optional(Type.Boolean({
-				description: `Hold results for review after searching. The user can press ${curateLabel} to open an interactive review page in the browser, or wait for the countdown to auto-send all results. Enabled by default for multi-query searches. Set to false to skip the review window.`,
+				description: `Hold results for review after searching. The user can press ${curateLabel} to open an interactive review page in the browser, or wait for the countdown to auto-send all results. Enabled by default for multi-query searches when a UI is present. Set curate to false to skip the review window — always do this in automated agent pipelines to avoid blocking.`,
 			})),
 			context: Type.Optional(Type.String({
 				description: "Brief description of your current task or goal. Improves auto-filter relevance for multi-query searches.",
@@ -648,6 +653,8 @@ export default function (pi: ExtensionAPI) {
 					searxng: searxngAvail,
 					gemini: geminiApiAvail || !!geminiWebAvail,
 					duckduckgo: duckduckgoAvail,
+					semanticScholar: isSemanticScholarAvailable(),
+					arxiv: isArxivAvailable(),
 				};
 				const defaultProvider = resolveProvider(params.provider, availableProviders);
 				const curateConfig = loadConfig();
@@ -1061,7 +1068,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "fetch_content",
 		label: "Fetch Content",
-		description: "Fetch URL(s) and extract readable content as markdown. Supports YouTube video transcripts (with thumbnail), GitHub repository contents, and local video files (with frame thumbnail). Video frames can be extracted via timestamp/range or sampled across the entire video with frames alone. Falls back to Gemini for pages that block bots or fail Readability extraction. For YouTube and video files: ALWAYS pass the user's specific question via the prompt parameter — this directs the AI to focus on that aspect of the video, producing much better results than a generic extraction. Content is always stored and can be retrieved with get_search_content.",
+		description: "Fetch and read content from a URL. Extracts readable content as markdown (default) or plain text. Output is truncated to 2000 lines or 50.0KB (whichever is hit first). Use this to read web pages, articles, or documentation. Academic paper support: arXiv abstract pages (arxiv.org/abs/ID) return structured metadata (title, authors, abstract, categories, DOI); arXiv PDF pages (arxiv.org/pdf/ID) and other PDF URLs return the full extracted text inline — no separate read step needed. DOI URLs (doi.org/10.xxx/yyy) automatically try Unpaywall to find an open-access version first. For paywalled pages, falls back to Jina Reader then Gemini. Also supports: YouTube video transcripts (with thumbnail), GitHub repository contents, and local video files (with frame thumbnail). Video frames can be extracted via timestamp/range or sampled across the entire video with frames alone. Falls back to Gemini for pages that block bots or fail Readability extraction. For YouTube and video files: ALWAYS pass the user's specific question via the prompt parameter — this directs the AI to focus on that aspect of the video, producing much better results than a generic extraction. Content is always stored and can be retrieved with get_search_content.",
 		parameters: Type.Object({
 			url: Type.Optional(Type.String({ description: "Single URL to fetch" })),
 			urls: Type.Optional(Type.Array(Type.String(), { description: "Multiple URLs (parallel)" })),
@@ -1304,13 +1311,13 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "get_search_content",
 		label: "Get Search Content",
-		description: "Retrieve full content from a previous web_search or fetch_content call.",
+		description: "Retrieve full content from a previous web_search or fetch_content call. Use the responseId returned by those tools. For web_search results: specify queryIndex (0-based) or query text to get the full answer+sources for that query. For fetch_content results with multiple URLs: specify urlIndex (0-based) or url to get the full page text. For background-fetched content (when includeContent was true in web_search), call this after receiving the content-ready notification with the fetchId as responseId.",
 		parameters: Type.Object({
-			responseId: Type.String({ description: "The responseId from web_search or fetch_content" }),
-			query: Type.Optional(Type.String({ description: "Get content for this query (web_search)" })),
-			queryIndex: Type.Optional(Type.Number({ description: "Get content for query at index" })),
-			url: Type.Optional(Type.String({ description: "Get content for this URL" })),
-			urlIndex: Type.Optional(Type.Number({ description: "Get content for URL at index" })),
+			responseId: Type.String({ description: "The responseId (or fetchId for background fetches) from web_search or fetch_content" }),
+			query: Type.Optional(Type.String({ description: "For web_search results: retrieve the full answer for this specific query string" })),
+			queryIndex: Type.Optional(Type.Number({ description: "For web_search results: retrieve the full answer at this 0-based query index" })),
+			url: Type.Optional(Type.String({ description: "For fetch_content results: retrieve full content for this URL" })),
+			urlIndex: Type.Optional(Type.Number({ description: "For fetch_content results: retrieve full content for the URL at this 0-based index" })),
 		}),
 
 		async execute(_toolCallId, params) {
@@ -1476,6 +1483,8 @@ export default function (pi: ExtensionAPI) {
 				searxng: searxngAvail,
 				gemini: geminiApiAvail || !!geminiWebAvail,
 				duckduckgo: duckduckgoAvail,
+				semanticScholar: isSemanticScholarAvailable(),
+				arxiv: isArxivAvailable(),
 			};
 			const defaultProvider = resolveProvider(undefined, availableProviders);
 

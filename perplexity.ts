@@ -167,16 +167,33 @@ export async function searchWithPerplexity(query: string, options: SearchOptions
 	const answer = (data.choices as Array<{ message?: { content?: string } }>)?.[0]?.message?.content || "";
 	const citations = Array.isArray(data.citations) ? data.citations : [];
 
+	// Extract per-citation snippets: find sentences in the answer that reference [N] markers
+	function extractSnippetForIndex(text: string, idx: number): string {
+		// Perplexity uses [1][2] style inline citations
+		const marker = `[${idx + 1}]`;
+		const sentences = text.split(/(?<=[.!?])\s+/);
+		const relevant = sentences.filter(s => s.includes(marker));
+		if (relevant.length > 0) {
+			return relevant.slice(0, 2)
+				.join(" ")
+				.replace(/\[\d+\]/g, "")
+				.trim()
+				.slice(0, 300);
+		}
+		return "";
+	}
+
 	const results: SearchResult[] = [];
 	for (let i = 0; i < Math.min(citations.length, numResults); i++) {
 		const citation = citations[i];
+		const snippet = extractSnippetForIndex(answer, i);
 		if (typeof citation === "string") {
-			results.push({ title: `Source ${i + 1}`, url: citation, snippet: "" });
+			results.push({ title: `Source ${i + 1}`, url: citation, snippet });
 		} else if (citation && typeof citation === "object" && typeof citation.url === "string") {
 			results.push({
 				title: citation.title || `Source ${i + 1}`,
 				url: citation.url,
-				snippet: "",
+				snippet: snippet || (typeof citation.snippet === "string" ? citation.snippet : ""),
 			});
 		}
 	}

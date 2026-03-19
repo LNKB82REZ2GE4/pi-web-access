@@ -55,6 +55,17 @@ function resolveDuckDuckGoUrl(href: string): string | null {
 
 function buildQuery(query: string, options: SearchOptions): string {
 	let q = query;
+
+	// Inject site: operator for domain-include filters so DuckDuckGo filters at the index
+	// level rather than relying on post-hoc filtering (which can yield 0 results).
+	const includes = options.domainFilter?.filter(f => !f.startsWith("-")) ?? [];
+	if (includes.length === 1) {
+		q = `site:${includes[0]} ${q}`;
+	} else if (includes.length > 1) {
+		// DuckDuckGo supports (site:a.com OR site:b.com) syntax
+		q = `(${includes.map(d => `site:${d}`).join(" OR ")}) ${q}`;
+	}
+
 	if (options.recencyFilter) {
 		const labels: Record<string, string> = {
 			day: "past 24 hours",
@@ -70,6 +81,9 @@ function buildQuery(query: string, options: SearchOptions): string {
 export async function searchWithDuckDuckGo(query: string, options: SearchOptions = {}): Promise<SearchResponse> {
 	const activityId = activityMonitor.logStart({ type: "api", query: `duckduckgo: ${query}` });
 	const numResults = Math.min(options.numResults ?? 5, 20);
+	// When site: is already in the query we still parse up to 50 raw results for better recall
+	const hasDomainIncludes = options.domainFilter?.some(f => !f.startsWith("-"));
+	const parseLimit = hasDomainIncludes ? 50 : numResults;
 
 	const body = new URLSearchParams();
 	body.set("q", buildQuery(query, options));
@@ -117,7 +131,10 @@ export async function searchWithDuckDuckGo(query: string, options: SearchOptions
 		if (results.length >= numResults) break;
 		const href = (anchor.getAttribute("href") || "").trim();
 		const url = resolveDuckDuckGoUrl(href);
-		if (!url || seen.has(url) || !matchesDomainFilter(url, options.domainFilter)) continue;
+		// When site: was used in the query, domain includes are already enforced at search level;
+		// we still run the filter for excludes.
+		if (!url || seen.has(url) || seen.size >= parseLimit) continue;
+		if (!matchesDomainFilter(url, options.domainFilter)) continue;
 		seen.add(url);
 
 		const parent = anchor.closest(".result");
