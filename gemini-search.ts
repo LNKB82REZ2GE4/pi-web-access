@@ -15,7 +15,7 @@ export type SearchProvider = "auto" | "perplexity" | "brave" | "searxng" | "gemi
 
 const CONFIG_PATH = join(homedir(), ".pi", "web-search.json");
 
-let cachedSearchConfig: { provider: SearchProvider } | null = null;
+let cachedSearchConfig: { provider: SearchProvider; searchModel?: string } | null = null;
 
 function parseProvider(raw: unknown): SearchProvider {
 	if (
@@ -28,16 +28,23 @@ function parseProvider(raw: unknown): SearchProvider {
 	return "auto";
 }
 
-function getSearchConfig(): { provider: SearchProvider } {
+function normalizeSearchModel(value: unknown): string | undefined {
+	return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function getSearchConfig(): { provider: SearchProvider; searchModel?: string } {
 	if (cachedSearchConfig) return cachedSearchConfig;
 	try {
 		if (existsSync(CONFIG_PATH)) {
 			const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
-			cachedSearchConfig = { provider: parseProvider(raw.provider ?? raw.searchProvider) };
+			cachedSearchConfig = {
+				provider: parseProvider(raw.provider ?? raw.searchProvider),
+				searchModel: normalizeSearchModel(raw.searchModel),
+			};
 			return cachedSearchConfig;
 		}
 	} catch {}
-	cachedSearchConfig = { provider: "auto" };
+	cachedSearchConfig = { provider: "auto", searchModel: undefined };
 	return cachedSearchConfig;
 }
 
@@ -75,7 +82,7 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 		throw new Error(
 			"Gemini search unavailable. Either:\n" +
 			"  1. Set GEMINI_API_KEY (env) or geminiApiKey in ~/.pi/web-search.json\n" +
-			"  2. Sign into gemini.google.com in Chrome"
+			"  2. Sign into gemini.google.com in a supported Chromium-based browser"
 		);
 	}
 
@@ -130,7 +137,7 @@ async function searchWithGeminiApi(query: string, options: SearchOptions = {}): 
 	const activityId = activityMonitor.logStart({ type: "api", query });
 
 	try {
-		const model = DEFAULT_MODEL;
+		const model = getSearchConfig().searchModel ?? DEFAULT_MODEL;
 		const body = {
 			contents: [{ parts: [{ text: query }] }],
 			tools: [{ google_search: {} }],

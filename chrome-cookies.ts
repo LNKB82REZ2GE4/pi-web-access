@@ -6,6 +6,14 @@ import { join } from "node:path";
 
 export type CookieMap = Record<string, string>;
 
+interface BrowserConfig {
+	name: string;
+	baseDir: string;
+	keychainService?: string;
+	keychainAccount?: string;
+	secretToolApp?: string;
+}
+
 const GOOGLE_ORIGINS = [
 	"https://gemini.google.com",
 	"https://accounts.google.com",
@@ -33,62 +41,101 @@ const ALL_COOKIE_NAMES = new Set([
 	"SIDCC",
 ]);
 
-const CHROME_COOKIES_PATH = join(
-	homedir(),
-	"Library/Application Support/Google/Chrome/Default/Cookies",
-);
+const MACOS_BROWSER_CONFIGS: BrowserConfig[] = [
+	{
+		name: "Helium",
+		baseDir: "Library/Application Support/net.imput.helium",
+		keychainService: "Helium Storage Key",
+		keychainAccount: "Helium",
+	},
+	{
+		name: "Chrome",
+		baseDir: "Library/Application Support/Google/Chrome",
+		keychainService: "Chrome Safe Storage",
+		keychainAccount: "Chrome",
+	},
+	{
+		name: "Arc",
+		baseDir: "Library/Application Support/Arc/User Data",
+		keychainService: "Arc Safe Storage",
+		keychainAccount: "Arc",
+	},
+];
 
-export async function getGoogleCookies(): Promise<{ cookies: CookieMap; warnings: string[] } | null> {
-	if (platform() !== "darwin") return null;
-	if (!existsSync(CHROME_COOKIES_PATH)) return null;
+const LINUX_BROWSER_CONFIGS: BrowserConfig[] = [
+	{ name: "Chromium", baseDir: ".config/chromium", secretToolApp: "chromium" },
+	{ name: "Chrome", baseDir: ".config/google-chrome", secretToolApp: "chrome" },
+];
+
+export async function getGoogleCookies(
+	options?: { profile?: string; requiredCookies?: string[] },
+): Promise<{ cookies: CookieMap; warnings: string[] } | null> {
+	const currentPlatform = platform();
+	const configs = currentPlatform === "darwin"
+		? MACOS_BROWSER_CONFIGS
+		: currentPlatform === "linux"
+			? LINUX_BROWSER_CONFIGS
+			: [];
+	if (configs.length === 0) return null;
 
 	const warnings: string[] = [];
+	const profile = options?.profile ?? "Default";
+	const hosts = GOOGLE_ORIGINS.map((origin) => new URL(origin).hostname);
 
-	const password = await readKeychainPassword();
-	if (!password) {
-		warnings.push("Could not read Chrome Safe Storage password from Keychain");
-		return { cookies: {}, warnings };
-	}
+	for (const config of configs) {
+		const cookiesPath = join(homedir(), config.baseDir, profile, "Cookies");
+		if (!existsSync(cookiesPath)) continue;
 
-	const key = pbkdf2Sync(password, "saltysalt", 1003, 16, "sha1");
-	const tempDir = mkdtempSync(join(tmpdir(), "pi-chrome-cookies-"));
-
-	try {
-		const tempDb = join(tempDir, "Cookies");
-		copyFileSync(CHROME_COOKIES_PATH, tempDb);
-		copySidecar(CHROME_COOKIES_PATH, tempDb, "-wal");
-		copySidecar(CHROME_COOKIES_PATH, tempDb, "-shm");
-
-		const metaVersion = await readMetaVersion(tempDb);
-		const stripHash = metaVersion >= 24;
-
-		const hosts = GOOGLE_ORIGINS.map((o) => new URL(o).hostname);
-		const rows = await queryCookieRows(tempDb, hosts);
-		if (!rows) {
-			warnings.push("Failed to query Chrome cookie database");
-			return { cookies: {}, warnings };
+		const password = await readBrowserPassword(config, currentPlatform);
+		if (!password) {
+			warnings.push(`Could not read ${config.name} cookie encryption password`);
+			continue;
 		}
 
-		const cookies: CookieMap = {};
-		for (const row of rows) {
-			const name = row.name as string;
-			if (!ALL_COOKIE_NAMES.has(name)) continue;
-			if (cookies[name]) continue;
+		const key = pbkdf2Sync(password, "saltysalt", currentPlatform === "darwin" ? 1003 : 1, 16, "sha1");
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-chrome-cookies-"));
 
-			let value = typeof row.value === "string" && row.value.length > 0 ? row.value : null;
-			if (!value) {
-				const encrypted = row.encrypted_value;
-				if (encrypted instanceof Uint8Array) {
-					value = decryptCookieValue(encrypted, key, stripHash);
-				}
+		try {
+			const tempDb = join(tempDir, "Cookies");
+			copyFileSync(cookiesPath, tempDb);
+			copySidecar(cookiesPath, tempDb, "-wal");
+			copySidecar(cookiesPath, tempDb, "-shm");
+
+			const metaVersion = await readMetaVersion(tempDb);
+			const stripHash = metaVersion >= 24;
+			const rows = await queryCookieRows(tempDb, hosts);
+			if (!rows) {
+				warnings.push(`Failed to query ${config.name} cookie database`);
+				continue;
 			}
-			if (value) cookies[name] = value;
-		}
 
-		return { cookies, warnings };
-	} finally {
-		rmSync(tempDir, { recursive: true, force: true });
+			const cookies: CookieMap = {};
+			for (const row of rows) {
+				const name = row.name as string;
+				if (!ALL_COOKIE_NAMES.has(name)) continue;
+				if (cookies[name]) continue;
+
+				let value = typeof row.value === "string" && row.value.length > 0 ? row.value : null;
+				if (!value) {
+					const encrypted = row.encrypted_value;
+					if (encrypted instanceof Uint8Array) {
+						value = decryptCookieValue(encrypted, key, stripHash);
+					}
+				}
+				if (value) cookies[name] = value;
+			}
+
+			if (options?.requiredCookies?.length && !options.requiredCookies.every((name) => Boolean(cookies[name]))) {
+				continue;
+			}
+
+			return { cookies, warnings };
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
 	}
+
+	return null;
 }
 
 function decryptCookieValue(encrypted: Uint8Array, key: Buffer, stripHash: boolean): string | null {
@@ -124,15 +171,49 @@ function removePkcs7Padding(buf: Buffer): Buffer {
 	return buf.subarray(0, buf.length - padding);
 }
 
-function readKeychainPassword(): Promise<string | null> {
+function readBrowserPassword(
+	config: BrowserConfig,
+	currentPlatform: ReturnType<typeof platform>,
+): Promise<string | null> {
+	if (currentPlatform === "darwin") {
+		if (!config.keychainAccount || !config.keychainService) return Promise.resolve(null);
+		return readKeychainPassword(config.keychainAccount, config.keychainService);
+	}
+	if (currentPlatform === "linux") {
+		return readLinuxPassword(config.secretToolApp);
+	}
+	return Promise.resolve(null);
+}
+
+function readKeychainPassword(account: string, service: string): Promise<string | null> {
 	return new Promise((resolve) => {
 		execFile(
 			"security",
-			["find-generic-password", "-w", "-a", "Chrome", "-s", "Chrome Safe Storage"],
+			["find-generic-password", "-w", "-a", account, "-s", service],
 			{ timeout: 5000 },
 			(err, stdout) => {
 				if (err) { resolve(null); return; }
 				resolve(stdout.trim() || null);
+			},
+		);
+	});
+}
+
+function readLinuxPassword(secretToolApp: string | undefined): Promise<string> {
+	if (!secretToolApp) return Promise.resolve("peanuts");
+
+	return new Promise((resolve) => {
+		execFile(
+			"secret-tool",
+			["lookup", "application", secretToolApp],
+			{ timeout: 5000 },
+			(err, stdout) => {
+				if (err) {
+					// KDE Wallet users fall through to peanuts intentionally.
+					resolve("peanuts");
+					return;
+				}
+				resolve(stdout.trim() || "peanuts");
 			},
 		);
 	});

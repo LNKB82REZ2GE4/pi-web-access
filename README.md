@@ -4,7 +4,7 @@
 
 # Pi Web Access
 
-**Web search, content extraction, and video understanding for Pi agent. Zero config with Chrome, or bring your own API keys.**
+**Web search, content extraction, and video understanding for Pi agent. Zero config with a supported Chromium-based browser, or bring your own API keys.**
 
 [![npm version](https://img.shields.io/npm/v/pi-web-access?style=for-the-badge)](https://www.npmjs.com/package/pi-web-access)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
@@ -14,7 +14,7 @@ https://github.com/user-attachments/assets/cac6a17a-1eeb-4dde-9818-cdf85d8ea98f
 
 ## Why Pi Web Access
 
-**Zero Config** — Signed into Google in Chrome? That's it. The extension reads your Chrome session cookies to access Gemini directly. No API keys, no setup, no subscriptions.
+**Zero Config** — Signed into Google in Chrome, Arc, Helium, or Chromium? That's it. The extension reads your browser session cookies to access Gemini directly. No API keys, no setup, no subscriptions.
 
 **Video Understanding** — Point it at a YouTube video or local screen recording and ask questions about what's on screen. Full transcripts, visual descriptions, and frame extraction at exact timestamps.
 
@@ -28,7 +28,7 @@ https://github.com/user-attachments/assets/cac6a17a-1eeb-4dde-9818-cdf85d8ea98f
 pi install npm:pi-web-access
 ```
 
-If you're not signed into Chrome, or prefer a different provider, add API keys to `~/.pi/web-search.json`:
+If you're not signed into a supported Chromium-based browser, or prefer a different provider, add API keys to `~/.pi/web-search.json`:
 
 ```json
 {
@@ -211,6 +211,10 @@ Results get injected into the conversation when you click Send. The agent sees t
 
 Browse stored search results interactively. Lists all results from the current session with their response IDs for easy retrieval.
 
+### /google-account
+
+Show the active Google account currently authenticated for Gemini Web. Useful when multiple Chromium profiles exist or `chromeProfile` is set in config.
+
 ## Activity Monitor
 
 Toggle with **Ctrl+Shift+W** to see live request/response activity:
@@ -237,6 +241,8 @@ All config lives in `~/.pi/web-search.json`. Every field is optional.
     "apiKey": ""
   },
   "provider": "perplexity",
+  "chromeProfile": "Profile 2",
+  "searchModel": "gemini-2.5-flash",
   "curateWindow": 10,
   "autoFilter": true,
   "githubClone": {
@@ -262,6 +268,7 @@ All config lives in `~/.pi/web-search.json`. Every field is optional.
 ```
 
 `GEMINI_API_KEY`, `PERPLEXITY_API_KEY`, `BRAVE_API_KEY`, and `SEARXNG_BASE_URL`/`SEARXNG_API_KEY` env vars take precedence over config file values. `provider` sets the default search provider: `"perplexity"`, `"brave"`, `"searxng"`, `"gemini"`, or `"duckduckgo"`. This is also updated automatically when you change the provider in the curator UI. `curateWindow` controls how many seconds multi-query searches wait before auto-sending results (default: 10). During the countdown, press Ctrl+Shift+S to open the browser curator. Set to 0 to always send immediately (Ctrl+Shift+S still works during the search itself).
+`chromeProfile` overrides the Chromium profile directory used for Gemini Web cookie lookup. `searchModel` overrides the Gemini API model used by `web_search` without changing URL, YouTube, or video extraction defaults.
 
 ### Shortcuts
 
@@ -310,7 +317,7 @@ Rate limits: Perplexity is capped at 10 requests/minute (client-side). Content f
 
 ## Limitations
 
-- Chrome cookie extraction is macOS-only — other platforms fall through to API keys. First-time access may trigger a Keychain dialog.
+- Chromium cookie extraction works on macOS and Linux. Linux uses `secret-tool` when available and falls back to Chromium's default password otherwise; other platforms fall through to API keys. First-time macOS access may trigger a Keychain dialog.
 - YouTube private/age-restricted videos may fail on all extraction paths.
 - Gemini can process videos up to ~1 hour; longer videos may be truncated.
 - PDFs are text-extracted only (no OCR for scanned documents).
@@ -331,7 +338,7 @@ Rate limits: Perplexity is capped at 10 requests/minute (client-side). Content f
 | `gemini-url-context.ts` | Gemini URL Context + Web extraction fallbacks |
 | `gemini-web.ts` | Gemini Web client (cookie auth, StreamGenerate) |
 | `gemini-api.ts` | Gemini REST API client (generateContent) |
-| `chrome-cookies.ts` | macOS Chrome cookie extraction (Keychain + SQLite) |
+| `chrome-cookies.ts` | macOS/Linux Chromium-based cookie extraction (Keychain/secret-tool + SQLite) |
 | `youtube-extract.ts` | YouTube detection, three-tier extraction, frame extraction |
 | `video-extract.ts` | Local video detection, Files API upload, Gemini analysis |
 | `github-extract.ts` | GitHub URL parsing, clone cache, content generation |

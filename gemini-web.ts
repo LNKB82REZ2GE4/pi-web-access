@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { type CookieMap, getGoogleCookies } from "./chrome-cookies.js";
 
 const GEMINI_APP_URL = "https://gemini.google.com/app";
@@ -5,6 +8,8 @@ const GEMINI_STREAM_GENERATE_URL =
 	"https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate";
 const GEMINI_UPLOAD_URL = "https://content-push.googleapis.com/upload";
 const GEMINI_UPLOAD_PUSH_ID = "feeds/mcudyrk2a4khkz";
+const GOOGLE_LIST_ACCOUNTS_URL =
+	"https://accounts.google.com/ListAccounts?gpsia=1&source=ChromiumBrowser&laf=b64bin&json=standard";
 
 const USER_AGENT =
 	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -17,6 +22,13 @@ const MODEL_HEADERS: Record<string, string> = {
 };
 
 const REQUIRED_COOKIES = ["__Secure-1PSID", "__Secure-1PSIDTS"];
+const CONFIG_PATH = join(homedir(), ".pi", "web-search.json");
+
+interface GeminiWebConfig {
+	chromeProfile?: string;
+}
+
+let cachedConfig: GeminiWebConfig | null = null;
 
 export interface GeminiWebOptions {
 	youtubeUrl?: string;
@@ -26,14 +38,64 @@ export interface GeminiWebOptions {
 	timeoutMs?: number;
 }
 
-function hasRequiredCookies(cookieMap: CookieMap): boolean {
-	return REQUIRED_COOKIES.every((name) => Boolean(cookieMap[name]));
+function loadConfig(): GeminiWebConfig {
+	if (cachedConfig) return cachedConfig;
+	if (existsSync(CONFIG_PATH)) {
+		try {
+			const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8")) as { chromeProfile?: unknown };
+			cachedConfig = {
+				chromeProfile: normalizeChromeProfile(raw.chromeProfile),
+			};
+			return cachedConfig;
+		} catch {}
+	}
+	cachedConfig = {};
+	return cachedConfig;
 }
 
-export async function isGeminiWebAvailable(): Promise<CookieMap | null> {
-	const result = await getGoogleCookies();
-	if (!result || !hasRequiredCookies(result.cookies)) return null;
+function normalizeChromeProfile(value: unknown): string | undefined {
+	return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function getChromeProfileFromConfig(): string | undefined {
+	return loadConfig().chromeProfile;
+}
+
+export async function isGeminiWebAvailable(chromeProfile?: string): Promise<CookieMap | null> {
+	const result = await getGoogleCookies({
+		profile: normalizeChromeProfile(chromeProfile) ?? getChromeProfileFromConfig(),
+		requiredCookies: REQUIRED_COOKIES,
+	});
+	if (!result) return null;
 	return result.cookies;
+}
+
+export async function getActiveGoogleEmail(cookies: CookieMap): Promise<string | null> {
+	const cookieHeader = buildCookieHeader(cookies);
+	if (!cookieHeader) return null;
+
+	try {
+		const html = await fetchWithCookieRedirects(
+			GEMINI_APP_URL,
+			cookieHeader,
+			10,
+			AbortSignal.timeout(10000),
+		);
+		const email = extractEmailFromGeminiHtml(html);
+		if (email) return email;
+	} catch {}
+
+	try {
+		const response = await fetchWithCookieRedirects(
+			GOOGLE_LIST_ACCOUNTS_URL,
+			cookieHeader,
+			10,
+			AbortSignal.timeout(10000),
+		);
+		return extractEmailFromListAccounts(response);
+	} catch {
+		return null;
+	}
 }
 
 export async function queryWithCookies(
@@ -142,7 +204,7 @@ async function fetchAccessToken(
 		if (match?.[1]) return match[1];
 	}
 
-	throw new Error("Unable to authenticate with Gemini. Make sure you're signed into gemini.google.com in Chrome.");
+	throw new Error("Unable to authenticate with Gemini. Make sure you're signed into gemini.google.com in a supported Chromium-based browser.");
 }
 
 async function fetchWithCookieRedirects(
@@ -168,6 +230,73 @@ async function fetchWithCookieRedirects(
 		return await res.text();
 	}
 	throw new Error(`Too many redirects (>${maxRedirects})`);
+}
+
+function extractEmailFromGeminiHtml(html: string): string | null {
+	const patterns = [
+		/"email"\s*:\s*"([^"]+)"/,
+		/"displayEmail"\s*:\s*"([^"]+)"/,
+		/"identifier"\s*:\s*"([^"]+)"/,
+		/"defaultEmail"\s*:\s*"([^"]+)"/,
+		/"gaiaIdentifier"\s*:\s*"([^"]+)"/,
+	];
+
+	for (const pattern of patterns) {
+		const match = html.match(pattern);
+		const email = normalizeEmail(match?.[1]);
+		if (email) return email;
+	}
+
+	return findFirstEmail(html);
+}
+
+function extractEmailFromListAccounts(text: string): string | null {
+	const trimmed = text.replace(/^\)\]\}'\s*/, "");
+	try {
+		return findEmailInValue(JSON.parse(trimmed)) ?? findFirstEmail(trimmed);
+	} catch {
+		return findFirstEmail(trimmed);
+	}
+}
+
+function findEmailInValue(value: unknown): string | null {
+	if (typeof value === "string") return normalizeEmail(value);
+	if (Array.isArray(value)) {
+		for (const item of value) {
+			const email = findEmailInValue(item);
+			if (email) return email;
+		}
+		return null;
+	}
+	if (value && typeof value === "object") {
+		for (const item of Object.values(value as Record<string, unknown>)) {
+			const email = findEmailInValue(item);
+			if (email) return email;
+		}
+	}
+	return null;
+}
+
+function findFirstEmail(text: string): string | null {
+	const normalized = decodeEmailEscapes(text);
+	const match = normalized.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i);
+	return match?.[0] ?? null;
+}
+
+function normalizeEmail(value: string | undefined): string | null {
+	if (!value) return null;
+	const normalized = decodeEmailEscapes(value.trim());
+	return /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(normalized) ? normalized : null;
+}
+
+function decodeEmailEscapes(value: string): string {
+	return value
+		.replace(/\\u0040/gi, "@")
+		.replace(/\\x40/gi, "@")
+		.replace(/&#64;/gi, "@")
+		.replace(/&commat;/gi, "@")
+		.replace(/\\"/g, "\"")
+		.replace(/\\\\/g, "\\");
 }
 
 async function uploadFile(
