@@ -103,6 +103,15 @@ function pickBestProvider(available: ProviderAvailability): string {
 	return "duckduckgo";
 }
 
+function normalizeProvider(provider: string | undefined): SearchProvider {
+	if (
+		provider === "perplexity" || provider === "brave" || provider === "searxng" ||
+		provider === "gemini" || provider === "duckduckgo" || provider === "auto" ||
+		provider === "semantic-scholar" || provider === "arxiv"
+	) return provider;
+	return "auto";
+}
+
 function resolveProvider(
 	requested: string | undefined,
 	available: ProviderAvailability,
@@ -137,6 +146,7 @@ interface PendingCurate {
 	domainFilter?: string[];
 	availableProviders: ProviderAvailability;
 	defaultProvider: string;
+	searchProvider: SearchProvider;
 	onUpdate: ((update: { content: Array<{ type: string; text: string }>; details?: Record<string, unknown> }) => void) | undefined;
 	signal: AbortSignal | undefined;
 	timer?: ReturnType<typeof setTimeout>;
@@ -493,10 +503,12 @@ export default function (pi: ExtensionAPI) {
 					},
 					onProviderChange(provider) {
 						saveConfig({ provider });
+						pc.defaultProvider = provider;
+						pc.searchProvider = normalizeProvider(provider);
 					},
 					async onAddSearch(query, queryIndex) {
 						const { answer, results } = await search(query, {
-							provider: pc.defaultProvider as SearchProvider | undefined,
+							provider: pc.searchProvider,
 							numResults: pc.numResults,
 							recencyFilter: pc.recencyFilter,
 							domainFilter: pc.domainFilter,
@@ -601,9 +613,9 @@ export default function (pi: ExtensionAPI) {
 		description:
 			`Search the web using multiple providers including academic databases. Returns an AI-synthesized answer with source citations. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background (then retrieve with get_search_content). Multi-query searches include a brief review window where the user can press ${curateLabel} to curate results in the browser before they're sent. Set curate to false to skip this (recommended for automated agent pipelines). Provider auto-selects: for academic/research queries → Semantic Scholar then arXiv first, then SearXNG, Brave, Gemini API, Perplexity, DuckDuckGo. For academic literature: use provider='semantic-scholar' or provider='arxiv' directly, increase numResults to 10-15, and use domainFilter to scope to specific venues (e.g. ['arxiv.org', 'semanticscholar.org']). Use recencyFilter to find recent publications.`,
 		parameters: Type.Object({
-			query: Type.Optional(Type.String({ description: "Single search query. For research tasks, prefer 'queries' with multiple varied angles instead." })),
-			queries: Type.Optional(Type.Array(Type.String(), { description: "Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['transformer attention mechanisms survey 2024', 'self-attention computational complexity analysis', 'attention alternatives linear transformers']. Bad: ['transformers', 'transformer attention', 'attention mechanism'] (too similar, redundant results)." })),
-			numResults: Type.Optional(Type.Number({ description: "Results per query (default: 5, max: 20). For academic literature reviews, use 10-15 to get broader coverage." })),
+			query: Type.Optional(Type.String({ minLength: 1, description: "Single search query. For research tasks, prefer 'queries' with multiple varied angles instead." })),
+			queries: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: "Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['transformer attention mechanisms survey 2024', 'self-attention computational complexity analysis', 'attention alternatives linear transformers']. Bad: ['transformers', 'transformer attention', 'attention mechanism'] (too similar, redundant results)." })),
+			numResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, description: "Results per query (default: 5, max: 20). For academic literature reviews, use 10-15 to get broader coverage." })),
 			includeContent: Type.Optional(Type.Boolean({ description: "Fetch full page content in the background. After the search returns, call get_search_content with the responseId and urlIndex to retrieve each page's full text." })),
 			recencyFilter: Type.Optional(
 				StringEnum(["day", "week", "month", "year"], { description: "Filter by recency" }),
@@ -621,7 +633,8 @@ export default function (pi: ExtensionAPI) {
 		}),
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			const queryList = params.queries ?? (params.query ? [params.query] : []);
+			const rawQueries = params.queries ?? (params.query ? [params.query] : []);
+			const queryList = rawQueries.map((query) => query.trim()).filter(Boolean);
 			const isMultiQuery = queryList.length > 1;
 			const shouldCurate = params.curate !== false && ctx?.hasUI !== false;
 
@@ -656,7 +669,13 @@ export default function (pi: ExtensionAPI) {
 					semanticScholar: isSemanticScholarAvailable(),
 					arxiv: isArxivAvailable(),
 				};
-				const defaultProvider = resolveProvider(params.provider, availableProviders);
+				const configuredProvider = normalizeProvider(params.provider || loadConfig().provider);
+				const defaultProvider = resolveProvider(configuredProvider, availableProviders);
+				// Keep auto routing active so SearXNG is preferred but failures or empty
+				// result sets can fall through to the remaining providers.
+				const searchProvider = configuredProvider === "auto"
+					? "auto"
+					: normalizeProvider(defaultProvider);
 				const curateConfig = loadConfig();
 				const curateWindow = curateConfig.curateWindow ?? DEFAULT_CURATE_WINDOW;
 
@@ -671,6 +690,7 @@ export default function (pi: ExtensionAPI) {
 					domainFilter: params.domainFilter,
 					availableProviders,
 					defaultProvider,
+					searchProvider,
 					onUpdate: onUpdate as PendingCurate["onUpdate"],
 					signal,
 					finish: () => {},
@@ -712,7 +732,7 @@ export default function (pi: ExtensionAPI) {
 					});
 					try {
 						const { answer, results } = await search(queryList[qi], {
-							provider: defaultProvider as SearchProvider | undefined,
+							provider: pc.searchProvider,
 							numResults: params.numResults,
 							recencyFilter: params.recencyFilter,
 							domainFilter: params.domainFilter,
@@ -1486,7 +1506,11 @@ export default function (pi: ExtensionAPI) {
 				semanticScholar: isSemanticScholarAvailable(),
 				arxiv: isArxivAvailable(),
 			};
-			const defaultProvider = resolveProvider(undefined, availableProviders);
+			const configuredProvider = normalizeProvider(loadConfig().provider);
+			const defaultProvider = resolveProvider(configuredProvider, availableProviders);
+			let activeSearchProvider: SearchProvider = configuredProvider === "auto"
+				? "auto"
+				: normalizeProvider(defaultProvider);
 
 			ctx.ui.notify("Opening web search curator...", "info");
 
@@ -1536,10 +1560,13 @@ export default function (pi: ExtensionAPI) {
 							if (reason === "timeout") sendResults();
 							closeCurator();
 						},
-						onProviderChange(provider) { saveConfig({ provider }); },
+						onProviderChange(provider) {
+							saveConfig({ provider });
+							activeSearchProvider = normalizeProvider(provider);
+						},
 						async onAddSearch(query, queryIndex) {
 							const { answer, results } = await search(query, {
-								provider: defaultProvider as SearchProvider | undefined,
+								provider: activeSearchProvider,
 								signal: searchAbort.signal,
 							});
 							collected.set(queryIndex, { query, answer, results, error: null });
@@ -1560,7 +1587,7 @@ export default function (pi: ExtensionAPI) {
 							if (aborted) break;
 							try {
 								const { answer, results } = await search(queries[qi], {
-									provider: defaultProvider as SearchProvider | undefined,
+									provider: activeSearchProvider,
 									signal: searchAbort.signal,
 								});
 								if (aborted) break;

@@ -96,11 +96,22 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 		if (isArxivAvailable()) attempts.push(async () => searchWithArxiv(query, options));
 	}
 
-	if (isSearxngAvailable()) attempts.push(async () => searchWithSearxng(query, options));
-	if (isBraveAvailable()) attempts.push(async () => searchWithBrave(query, options));
+	// Aggregator providers can return a successful HTTP response with zero useful
+	// results. In auto mode, treat that as a miss and continue down the waterfall.
+	if (isSearxngAvailable()) attempts.push(async () => {
+		const result = await searchWithSearxng(query, options);
+		return result.results.length > 0 ? result : null;
+	});
+	if (isBraveAvailable()) attempts.push(async () => {
+		const result = await searchWithBrave(query, options);
+		return result.results.length > 0 ? result : null;
+	});
 	attempts.push(async () => await searchWithGeminiApi(query, options));
 	if (isPerplexityAvailable()) attempts.push(async () => searchWithPerplexity(query, options));
-	if (isDuckDuckGoAvailable()) attempts.push(async () => searchWithDuckDuckGo(query, options));
+	if (isDuckDuckGoAvailable()) attempts.push(async () => {
+		const result = await searchWithDuckDuckGo(query, options);
+		return result.results.length > 0 ? result : null;
+	});
 
 	// For non-academic queries also include academic providers at the end as a fallback
 	if (!academic) {
